@@ -2640,6 +2640,96 @@ JSONTEST_FIXTURE_LOCAL(StreamWriterTest, unicode) {
                   "\"\\t\\n\\ud806\\udca1=\\u0133\\ud82c\\udd1b\\uff67\"\n}");
 }
 
+// Control chars should be escaped regardless of UTF-8 input encoding.
+JSONTEST_FIXTURE_LOCAL(StreamWriterTest, escapeControlCharacters) {
+  auto uEscape = [](unsigned ch) {
+    static const char h[] = "0123456789abcdef";
+    std::string r = "\\u";
+    r += h[(ch >> (3 * 4)) & 0xf];
+    r += h[(ch >> (2 * 4)) & 0xf];
+    r += h[(ch >> (1 * 4)) & 0xf];
+    r += h[(ch >> (0 * 4)) & 0xf];
+    return r;
+  };
+  auto shortEscape = [](unsigned ch) -> const char* {
+    switch (ch) {
+    case '\"':
+      return "\\\"";
+    case '\\':
+      return "\\\\";
+    case '\b':
+      return "\\b";
+    case '\f':
+      return "\\f";
+    case '\n':
+      return "\\n";
+    case '\r':
+      return "\\r";
+    case '\t':
+      return "\\t";
+    default:
+      return nullptr;
+    }
+  };
+
+  Json::StreamWriterBuilder b;
+
+  for (bool emitUTF8 : {true, false}) {
+    b.settings_["emitUTF8"] = emitUTF8;
+
+    for (unsigned i = 0; i != 0x100; ++i) {
+      if (!emitUTF8 && i >= 0x80)
+        break; // The algorithm would try to parse UTF-8, so stop here.
+
+      std::string raw({static_cast<char>(i)});
+      std::string esc = raw;
+      if (i < 0x20)
+        esc = uEscape(i);
+      if (const char* shEsc = shortEscape(i))
+        esc = shEsc;
+
+      // std::cout << "emit=" << emitUTF8 << ", i=" << std::hex << i << std::dec
+      //          << std::endl;
+
+      Json::Value root;
+      root["test"] = raw;
+      JSONTEST_ASSERT_STRING_EQUAL(
+          std::string("{\n\t\"test\" : \"").append(esc).append("\"\n}"),
+          Json::writeString(b, root))
+          << ", emit=" << emitUTF8 << ", i=" << i << ", raw=\"" << raw << "\""
+          << ", esc=\"" << esc << "\"";
+    }
+  }
+}
+
+#ifdef _WIN32
+JSONTEST_FIXTURE_LOCAL(StreamWriterTest, escapeTabCharacterWindows) {
+  // Get the current locale before changing it
+  std::string currentLocale = setlocale(LC_ALL, NULL);
+  setlocale(LC_ALL, "English_United States.1252");
+
+  Json::Value root;
+  root["test"] = "\tTabTesting\t";
+
+  Json::StreamWriterBuilder b;
+
+  JSONTEST_ASSERT(Json::writeString(b, root) == "{\n\t\"test\" : "
+                                                "\"\\tTabTesting\\t\"\n}");
+
+  b.settings_["emitUTF8"] = true;
+  JSONTEST_ASSERT(Json::writeString(b, root) == "{\n\t\"test\" : "
+                                                "\"\\tTabTesting\\t\"\n}");
+
+  b.settings_["emitUTF8"] = false;
+  JSONTEST_ASSERT(Json::writeString(b, root) == "{\n\t\"test\" : "
+                                                "\"\\tTabTesting\\t\"\n}");
+
+  // Restore the locale
+  if (!currentLocale.empty())
+    setlocale(LC_ALL, currentLocale.c_str());
+}
+#endif
+
 struct ReaderTest : JsonTest::TestCase {
   void setStrictMode() {
     reader = std::unique_ptr<Json::Reader>(
@@ -3286,11 +3376,11 @@ struct CharReaderAllowDropNullTest : JsonTest::TestCase {
     return [=](const Value& root) { JSONTEST_ASSERT_EQUAL(root, v); };
   }
 
-  ValueCheck objGetAnd(std::string idx, ValueCheck f) {
+  static ValueCheck objGetAnd(std::string idx, ValueCheck f) {
     return [=](const Value& root) { f(root.get(idx, true)); };
   }
 
-  ValueCheck arrGetAnd(int idx, ValueCheck f) {
+  static ValueCheck arrGetAnd(int idx, ValueCheck f) {
     return [=](const Value& root) { f(root[idx]); };
   }
 };
@@ -3824,6 +3914,15 @@ JSONTEST_FIXTURE_LOCAL(MemberTemplateIs, BehavesSameAsNamedIs) {
     JSONTEST_ASSERT_EQUAL(j.is<double>(), j.isDouble());
     JSONTEST_ASSERT_EQUAL(j.is<Json::String>(), j.isString());
   }
+}
+
+class VersionTest : public JsonTest::TestCase {};
+
+JSONTEST_FIXTURE_LOCAL(VersionTest, VersionNumbersMatch) {
+  std::ostringstream vstr;
+  vstr << JSONCPP_VERSION_MAJOR << '.' << JSONCPP_VERSION_MINOR << '.'
+       << JSONCPP_VERSION_PATCH;
+  JSONTEST_ASSERT_EQUAL(vstr.str(), std::string(JSONCPP_VERSION_STRING));
 }
 
 #if defined(__GNUC__)
